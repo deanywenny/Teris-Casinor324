@@ -787,13 +787,44 @@ function renderRight(){
   if(!ab.children.length)ab.innerHTML='<div style="color:var(--muted);font-size:12px">Keine aktiven Boosts</div>';
   renderWinFeedSide();
 }
-function renderLeaderboard(){
-  const arr=state.users.map(u=>({n:u.name,t:BigInt(u.teris||'0')})).sort((a,b)=>b.t>a.t?1:-1).slice(0,10);
-  el('leaderboard').innerHTML='<table><tbody>'+arr.map((r,i)=>`<tr>
-    <td style="color:var(--muted);width:20px;font-size:12px">${i+1}</td>
-    <td style="font-weight:${i<3?700:400};font-size:13px">${r.n}</td>
-    <td style="color:var(--gold);text-align:right;font-size:12px">${fmtBig(r.t)}</td>
-  </tr>`).join('')+'</tbody></table>';
+async function renderLeaderboard(){
+  const lb=el('leaderboard');
+  try{
+    const users=await apiGet('/users');
+    if(users.error||!Array.isArray(users)){
+      // Fallback: local
+      const arr=state.users.map(u=>({n:u.name,t:BigInt(u.teris||'0')})).sort((a,b)=>b.t>a.t?1:-1).slice(0,10);
+      lb.innerHTML='<table><tbody>'+arr.map((r,i)=>`<tr>
+        <td style="color:var(--muted);width:20px;font-size:12px">${i+1}</td>
+        <td style="font-weight:${i<3?700:400};font-size:13px">${r.n}</td>
+        <td style="color:var(--gold);text-align:right;font-size:12px">${fmtBig(r.t)}</td>
+      </tr>`).join('')+'</tbody></table>';
+      return;
+    }
+    const sorted=users.sort((a,b)=>Number(BigInt(b.teris||0)-BigInt(a.teris||0))).slice(0,10);
+    lb.innerHTML='<table><tbody>'+sorted.map((u,i)=>`<tr>
+      <td style="color:var(--muted);width:20px;font-size:12px">${i+1}</td>
+      <td style="font-weight:${i<3?700:400};font-size:13px">${u.name}</td>
+      <td style="color:var(--gold);text-align:right;font-size:12px">${fmtBig(BigInt(u.teris||0))}</td>
+    </tr>`).join('')+'</tbody></table>';
+    // Also sync all server users into local state for admin panel etc
+    users.forEach(su=>{
+      let lu=state.users.find(u=>u.name===su.name);
+      if(!lu){
+        state.users.push({name:su.name,teris:String(su.teris||'0'),isOwner:su.role==='owner',
+          isCoOwner:su.role==='coowner',isAdmin:['admin','owner','coowner'].includes(su.role),
+          isMod:su.role==='mod',banned:!!su.banned,ban_reason:su.ban_reason,ban_until:su.ban_until,
+          ranks:[],cosmetics:[],boosts:[],createdAt:su.created_at||Date.now(),playMs:0,
+          acceptedAGB:true,avatar:'💠',inventory:{boosts:{}},lastBetAt:0,
+          stats:{games:0,logins:0},perks:{},chatTimeout:null,vip:null});
+      } else {
+        lu.teris=String(su.teris||lu.teris||'0');
+        lu.isOwner=su.role==='owner';lu.isCoOwner=su.role==='coowner';
+        lu.isAdmin=['admin','owner','coowner'].includes(su.role);
+        lu.isMod=su.role==='mod';lu.banned=!!su.banned;
+      }
+    });
+  }catch(e){console.error('Leaderboard error:',e);}
 }
 function render(){renderRight();renderLeaderboard();}
 function renderWinFeedSide(){
@@ -931,6 +962,7 @@ el('btnLogin').onclick=async()=>{
     state.chat=chatData.map(m=>({system:!!m.system,text:m.message,username:m.username,ts:m.ts}));
   }
   connectSocket();
+  await renderLeaderboard(); // Alle User vom Server laden
   doLogin();
 };
 el('authPass').onkeydown=e=>{if(e.key==='Enter')el('btnLogin').onclick();};
