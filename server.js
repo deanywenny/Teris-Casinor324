@@ -255,17 +255,8 @@ app.get('/', (req, res) => {
 });
 
 initDB().then(() => {
-  server.listen(3000, () => {
-    console.log('');
-    console.log('🎰 TeriCasino laeuft!');
-    console.log('👉 Oeffne im Browser: http://localhost:3000');
-    console.log('');
-  });
-});initDB().then(() => {
-  server.listen(3000, () => {
-    console.log('');
-    console.log('🎰 TeriCasino laeuft!');
-    console.log('👉 Oeffne im Browser: http://localhost:3000');
-    console.log('');
+  const PORT = process.env.PORT || 3000;
+  server.listen(PORT, () => {
+    console.log('TeriCasino laeuft auf Port ' + PORT);
   });
 });
