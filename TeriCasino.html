@@ -696,33 +696,49 @@ const SPECIALS=[
   {id:'sp_vip',label:'VIP 7 Tage',icon:'💎',cost:250000,desc:'+10% Gewinn, VIP-Badge',onBuy:(u)=>{u.vip=now()+7*86400000;}},
 ];
 
-// ─── STORAGE ───
+// ─── STORAGE (Backend) ───
+let _saveTimer = null;
 function save(){
-  try{
-    const c=JSON.parse(JSON.stringify(state,(_,v)=>typeof v==='bigint'?v.toString():v));
-    localStorage.setItem(STORAGE_KEY,JSON.stringify(c));
-  }catch(e){console.error(e);}
+  if(!currentUser||!_token) return;
+  // Debounce: nicht bei jedem Klick sofort speichern, sondern nach 1.5s
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(()=>_saveToServer(), 1500);
+}
+function saveNow(){
+  clearTimeout(_saveTimer);
+  return _saveToServer();
+}
+async function _saveToServer(){
+  if(!currentUser||!_token) return;
+  const data = {
+    ranks: currentUser.ranks||[],
+    cosmetics: currentUser.cosmetics||[],
+    boosts: currentUser.boosts||[],
+    inventory: currentUser.inventory||{boosts:{}},
+    stats: currentUser.stats||{games:0,logins:0},
+    perks: currentUser.perks||{},
+    avatar: currentUser.avatar||'💠',
+    vip: currentUser.vip||null,
+    playMs: currentUser.playMs||0,
+    acceptedAGB: currentUser.acceptedAGB||false,
+    winFeed: state.winFeed||[],
+    chatTimeout: currentUser.chatTimeout||null,
+    twoFaEnabled: currentUser.twoFaEnabled||false,
+    twoFaSecret: currentUser.twoFaSecret||null,
+    banHistory: currentUser.banHistory||[],
+  };
+  try {
+    await apiPost('/save', { teris: String(currentUser.teris||'0'), data });
+  } catch(e) { console.error('Speichern fehlgeschlagen:', e); }
 }
 function load(){
-  try{
-    const raw=localStorage.getItem(STORAGE_KEY);
-    if(raw){
-      state=JSON.parse(raw);
-      state.users=(state.users||[]).map(u=>({
-        ...u,teris:String(u.teris||'0'),ranks:u.ranks||[],cosmetics:u.cosmetics||[],
-        boosts:u.boosts||[],isAdmin:!!u.isAdmin,isOwner:!!u.isOwner,isCoOwner:!!u.isCoOwner,isMod:!!u.isMod,banned:!!u.banned,
-        banInfo:u.banInfo||null,banHistory:u.banHistory||[],createdAt:u.createdAt||now(),
-        inventory:u.inventory||{boosts:{}},passPlain:u.passPlain||'',
-        stats:u.stats||{games:0,logins:0},perks:u.perks||{},chatTimeout:u.chatTimeout||null,
-        email:u.email||'',twoFaSecret:u.twoFaSecret||null,twoFaEnabled:!!u.twoFaEnabled,
-      }));
-      state.winFeed=state.winFeed||[];state.chat=state.chat||[];
-      state.modlog=state.modlog||[];state.tickets=state.tickets||[];
-      state.lastChatClear=state.lastChatClear||0;
-      state.settings=Object.assign({crashBias:.94,globalMultiplier:1,luckyMode:false,infiniteMode:false},state.settings||{});
-    }
-  }catch(e){console.error(e);}
-  save();
+  // Nichts tun - laden passiert beim Login vom Server
+  state.winFeed=state.winFeed||[];
+  state.chat=state.chat||[];
+  state.modlog=state.modlog||[];
+  state.tickets=state.tickets||[];
+  state.lastChatClear=state.lastChatClear||0;
+  state.settings=Object.assign({crashBias:.94,globalMultiplier:1,luckyMode:false,infiniteMode:false},state.settings||{});
 }
 
 // ─── USERS ───
@@ -898,12 +914,20 @@ el('btnSetPass')&&(el('btnSetPass').onclick=async()=>{
   el('btnSetPass').disabled=false;el('btnSetPass').textContent='Account erstellen ✓';
   if(res.error){showToast(res.error,'lose');return;}
   _token=res.token;localStorage.setItem('tc_token',_token);
-  // Also create local user entry for game state
-  const localRes=createUser(_regData.name,pass,_regData.email,BigInt(res.user.teris||1000),false,res.user.role==='owner',res.user.role==='coowner');
-  if(localRes.ok){
-    const u=localRes.user;u.isMod=res.user.role==='mod';u.isAdmin=res.user.role==='admin'||res.user.role==='owner'||res.user.role==='coowner';u.isOwner=res.user.role==='owner';u.isCoOwner=res.user.role==='coowner';
-    save();
-  }
+  // Lokalen User aus Serverdaten aufbauen
+  const su=res.user;
+  const newLocalUser={
+    name:su.name,passHash:'',passPlain:'',email:'',
+    teris:String(su.teris||'1000'),
+    isOwner:su.role==='owner',isCoOwner:su.role==='coowner',
+    isAdmin:['admin','owner','coowner'].includes(su.role),
+    isMod:su.role==='mod',banned:false,banInfo:null,banHistory:[],
+    createdAt:Date.now(),playMs:0,acceptedAGB:false,avatar:'💠',
+    ranks:[],cosmetics:[],boosts:[],inventory:{boosts:{}},
+    stats:{games:0,logins:0},perks:{},chatTimeout:null,vip:null,lastBetAt:0,
+  };
+  state.users.push(newLocalUser);
+  currentUser=newLocalUser;
   _regData.pass=pass;
   setRegStep(3);
 });
@@ -931,31 +955,41 @@ el('btnLogin').onclick=async()=>{
   }
   _token=res.token;localStorage.setItem('tc_token',_token);
   const serverUser=res.user;
-  // Sync with local state
-  let localUser=state.users.find(u=>u.name===serverUser.name);
-  if(!localUser){
-    // Create local entry for this user
-    const r=createUser(serverUser.name,p,'',BigInt(serverUser.teris||1000),false,false,false);
-    localUser=state.users.find(u=>u.name===serverUser.name);
-  }
-  if(!localUser){
-    // Fallback: manually push user
-    const u={name:serverUser.name,passHash:'',passPlain:p,email:'',teris:String(serverUser.teris||'1000'),
-      ranks:[],cosmetics:[],boosts:[],isAdmin:false,isOwner:false,isCoOwner:false,isMod:false,
-      banned:false,banInfo:null,banHistory:[],createdAt:Date.now(),playMs:0,acceptedAGB:false,
-      avatar:'💠',inventory:{boosts:{}},lastBetAt:0,stats:{games:0,logins:0},perks:{},chatTimeout:null,vip:null};
-    state.users.push(u);
-    localUser=u;
-  }
-  localUser.teris=String(serverUser.teris||'1000');
-  localUser.isOwner=serverUser.role==='owner';
-  localUser.isCoOwner=serverUser.role==='coowner';
-  localUser.isAdmin=['admin','owner','coowner'].includes(serverUser.role);
-  localUser.isMod=serverUser.role==='mod';
-  localUser.banned=!!serverUser.banned;
-  if(serverUser.banned)localUser.banInfo={reason:serverUser.ban_reason,until:serverUser.ban_until,by:serverUser.ban_by};
+  const d=serverUser.data||{};
+  // Lokalen User aus Serverdaten aufbauen
+  const localUser={
+    name:serverUser.name,
+    passHash:'',passPlain:'',email:'',
+    teris:String(serverUser.teris||'1000'),
+    isOwner:serverUser.role==='owner',
+    isCoOwner:serverUser.role==='coowner',
+    isAdmin:['admin','owner','coowner'].includes(serverUser.role),
+    isMod:serverUser.role==='mod',
+    banned:!!serverUser.banned,
+    banInfo:serverUser.banned?{reason:serverUser.ban_reason,until:serverUser.ban_until,by:serverUser.ban_by}:null,
+    banHistory:d.banHistory||[],
+    createdAt:serverUser.created_at||Date.now(),
+    playMs:d.playMs||0,
+    acceptedAGB:d.acceptedAGB||false,
+    avatar:d.avatar||'💠',
+    ranks:d.ranks||[],
+    cosmetics:d.cosmetics||[],
+    boosts:d.boosts||[],
+    inventory:d.inventory||{boosts:{}},
+    stats:d.stats||{games:0,logins:0},
+    perks:d.perks||{},
+    chatTimeout:d.chatTimeout||null,
+    vip:d.vip||null,
+    twoFaEnabled:d.twoFaEnabled||false,
+    twoFaSecret:d.twoFaSecret||null,
+    lastBetAt:0,
+  };
+  // Lokale state.users aktualisieren
+  const idx=state.users.findIndex(u=>u.name===serverUser.name);
+  if(idx>=0) state.users[idx]=localUser;
+  else state.users.push(localUser);
   currentUser=localUser;
-  save();
+  state.winFeed=d.winFeed||[];
   // Load chat from server
   const chatData=await apiGet('/chat');
   if(Array.isArray(chatData)){
@@ -2217,9 +2251,9 @@ function openBanModal(username,afterSave){
   };
 }
 
-// ─── LIVE SYNC (Tab-übergreifend via localStorage) ───
-function hydrateState(){try{const raw=localStorage.getItem(STORAGE_KEY);if(raw){const p=JSON.parse(raw);if(p&&typeof p==='object')state=p;}}catch(e){}}
-function syncUser(){if(!currentUser)return;const u=state.users.find(x=>x.name===currentUser.name);if(u)currentUser=u;}
+// ─── LIVE SYNC (jetzt über Backend/Socket.IO) ───
+function hydrateState(){ /* Kein localStorage mehr - alles läuft über Backend */ }
+function syncUser(){if(!currentUser)return;const u=state.users.find(x=>x.name===currentUser.name);if(u){const t=u.teris;Object.assign(currentUser,u);currentUser.teris=t||currentUser.teris;}}
 
 window.addEventListener('storage',e=>{
   if(e.key===STORAGE_KEY&&e.newValue){
